@@ -30,7 +30,9 @@ CH_holidays = [
 CHHolidays = [pd.date_range(start=i, end=i) for i in CH_holidays]
 CHCalendar = CustomBusinessDay(holidays=CHHolidays)
 
-mperday=60*42.0/5
+# 42 hours per week + 30 minutes for lunch
+mlunch = 30
+mperday=60*42.0/5 + mlunch
 
 def mtoh(n):
     return "%d:%02d" % (n/60, n%60)
