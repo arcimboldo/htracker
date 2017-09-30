@@ -12,7 +12,8 @@ import calendar as cl
 import argparse
 from pandas.tseries.offsets import CustomBusinessDay
 import sys
-
+import unittest
+import dateutil
 
 # https://www.feiertagskalender.ch/index.php?geo=2872&klasse=3&jahr=2017&hl=en
 CH_holidays = [
@@ -32,7 +33,8 @@ CHCalendar = CustomBusinessDay(holidays=CHHolidays)
 
 # 42 hours per week + 30 minutes for lunch
 mlunch = 30
-mperday=60*42.0/5 + mlunch
+#mperday=60*42.0/5 + mlunch
+mperday=60*42.0/5
 
 def mtoh(n):
     return "%d:%02d" % (n/60, n%60)
@@ -45,36 +47,74 @@ def expected_to_work(month, year=2017):
 
     return (len(bdays), mperday*len(bdays))
 
+
+def parsedate(line):
+    tokens = line.split('-')
+    s = dateutil.parser.parse(tokens[0], dayfirst=True)
+    if len(tokens) > 1:
+        e = dateutil.parser.parse(tokens[1], dayfirst=True)
+        return pd.date_range(start=s, end=e)
+    return [s]
+
+class Test(unittest.TestCase):
+    def test_parsedate(self):
+        dt = pd.datetime
+        for line, dates in [
+                ("01/02/2017", [dt(2017,2,1)]),
+                ("12.08.2017 - 15.08.2017", [dt(2017,8,12), dt(2017,8,13), dt(2017,8,14), dt(2017,8,15)]),
+                ]:
+            parsed = parsedate(line)
+            self.assertEqual(len(parsed), len(dates))
+            for i, d in enumerate(parsed):
+                self.assertEqual(d, dates[i])
+
 def setup():
     parser = argparse.ArgumentParser()
     parser.add_argument("filename", help="Filename")
     parser.add_argument("-f", "--full", action="store_true", help="Full report")
+    parser.add_argument("-v", dest='vfile', required=True, help="File containing vacation days")
     cfg = parser.parse_args()
+    vacations = []
+    try:
+        with open(cfg.vfile) as fd:
+            for line in fd:
+                if line.strip()[0] == '#':
+                    continue
+                vacations += parsedate(line)
+        cfg.vacation = [d.strftime("%Y/%m/%d") for d in vacations if d.weekday() < 5]
+    except Exception as ex:
+        parser.error("Error while parsing file %s: %s", cfg.vfile, ex)
     return cfg
 
 def produce_report(fname, vacation=[]):
+    # "Job","Clocked In","Clocked Out","Duration","Comment","Breaks","Adjustments","Mileage"
+    # "Centralway","03/04/2017 08:50","03/04/2017 18:35","9:45","","","",""
     df = pd.read_csv(fname, parse_dates=[0,1,2], usecols=[1,2,3,4], names=['start','end','duration', 'notes'], skiprows=1, dayfirst=True)
 
     df['notes'] = df.notes.fillna('')
     for vday in vacation:
+        # Add vacation days as fully worked days
         start = pd.datetime.strptime(vday + ' 8:00', '%Y/%m/%d %H:%M')
         end = start + pd.DateOffset(minutes=mperday)
         t0 = pd.datetime.today()
         t = pd.datetime(t0.year, t0.month, t0.day) + pd.DateOffset(minutes=mperday)
         df = df.append({'start': start, 'end': end, 'duration': t, 'notes': "VACATION"}, ignore_index=True)
-    # import pdb; pdb.set_trace()
+
     df['day'] = df.start.apply(lambda d: d.date())
     df['m'] = df.duration.apply(lambda t: t.hour*60 + t.minute)
+    df = df.sort_values(by='day').reindex()
 
+    # Group by day to get rid of multiple clock-in in a given day
     df2 = df.groupby('day', as_index=False).m.sum()
     df2['month'] = df2.day.apply(lambda d: d.month)
+
 
     # FIXME 4 is hardcoded
     mnumber = 4
     month = df2[df2.month == mnumber]
 
+    # Get the current year
     cyear, cmonth = month.day[0].year, month.day[0].month
-
 
     # working minutes per month:
 
@@ -100,13 +140,14 @@ def produce_report(fname, vacation=[]):
     return (m, df)
 
 
-def main(cfg, vacation=[], stream=sys.stdout):
-    m, full = produce_report(cfg.filename, vacation)
+def main(cfg, stream=sys.stdout):
+    m, full = produce_report(cfg.filename, cfg.vacation)
 
     stream.write("Running year\n")
-    stream.write("Worked:   %9s\n" % mtoh(m.m.sum()))
-    stream.write("Expected: %9s\n" % mtoh(m.em.sum()))
-    stream.write("Balance:  %9s\n" % mtoh(m.balance_m.sum()))
+    stream.write("Worked:          %9s\n" % mtoh(m.m.sum()))
+    stream.write("Expected:        %9s\n" % mtoh(m.em.sum()))
+    stream.write("Balance:         %9s\n" % mtoh(m.balance_m.sum()))
+    stream.write("Vacation days:   %9d\n" % len(cfg.vacation))
     stream.write("\n")
 
     for label in ['m', 'em', 'month', 'Month', 'balance_m']:
@@ -133,7 +174,5 @@ def main(cfg, vacation=[], stream=sys.stdout):
 
 if __name__ == "__main__":
     cfg = setup()
-    vacation = [
-        '2017/05/26',
-    ]
-    main(cfg, vacation)
+    
+    main(cfg)
