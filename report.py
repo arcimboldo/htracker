@@ -31,10 +31,15 @@ CH_holidays = [
 CHHolidays = [pd.date_range(start=i, end=i) for i in CH_holidays]
 CHCalendar = CustomBusinessDay(holidays=CHHolidays)
 
-# 42 hours per week + 30 minutes for lunch
-mlunch = 30
-#mperday=60*42.0/5 + mlunch
+# 42 hours per week
 mperday=60*42.0/5
+
+oncall = [
+    1, # 25/9 - 29/9
+    3, # 16/10 - 22/10
+]
+total_vacation_days = 25 + sum(oncall)
+
 
 def mtoh(n):
     return "%d:%02d" % (n/60, n%60)
@@ -147,9 +152,13 @@ def main(cfg, stream=sys.stdout):
     stream.write("Worked:          %9s\n" % mtoh(m.m.sum()))
     stream.write("Expected:        %9s\n" % mtoh(m.em.sum()))
     stream.write("Balance:         %9s\n" % mtoh(m.balance_m.sum()))
-    stream.write("Vacation days:   %9d\n" % len(cfg.vacation))
+    stream.write("Vacation days:   %9d (%d)\n" % (len(cfg.vacation), total_vacation_days - len(cfg.vacation)))
     stream.write("\n")
 
+    full['tmp'] = full.day.apply(lambda x: x.month)
+    m["vacations"] = m["month"].apply(lambda x: full[(full.tmp==x)&(full.notes=='VACATION')].tmp.count())
+    del full['tmp']
+    
     for label in ['m', 'em', 'month', 'Month', 'balance_m']:
         del m[label]
     # stream.write(df2)
@@ -158,8 +167,8 @@ def main(cfg, stream=sys.stdout):
 
     if cfg.full:
         full['hours'] = full.m.apply(mtoh)
-        full['month'] = full.day.apply(lambda x: x.strftime("%b"))
         full['day'] = full.day.apply(lambda x: x.strftime("%a %d"))
+        full['month'] = full.day.apply(lambda x: x.strftime("%b"))
 
         full['start'] = full.start.apply(lambda x: x.strftime("%H:%M"))
         full['end'] = full.end.apply(lambda x: x.strftime("%H:%M"))
@@ -174,5 +183,5 @@ def main(cfg, stream=sys.stdout):
 
 if __name__ == "__main__":
     cfg = setup()
-    
+
     main(cfg)
