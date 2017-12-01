@@ -78,6 +78,8 @@ def setup():
     parser.add_argument("filename", help="Filename")
     parser.add_argument("-f", "--full", action="store_true", help="Full report")
     parser.add_argument("-v", dest='vfile', required=True, help="File containing vacation days")
+    parser.add_argument("--start", default=None, help="Ignore entries earlier than this date")
+    parser.add_argument("--end", default=None, help="Ignore entries sequent to this date")
     cfg = parser.parse_args()
     vacations = []
     try:
@@ -89,9 +91,15 @@ def setup():
         cfg.vacation = [d.strftime("%Y/%m/%d") for d in vacations if d.weekday() < 5]
     except Exception as ex:
         parser.error("Error while parsing file %s: %s", cfg.vfile, ex)
+
+    if cfg.start is not None:
+        cfg.start = dateutil.parser.parse(cfg.start, dayfirst=True).date()
+    if cfg.end is not None:
+        cfg.end = dateutil.parser.parse(cfg.end, dayfirst=True).date()
+        
     return cfg
 
-def produce_report(fname, vacation=[]):
+def produce_report(fname, vacation=[], filterStart=None, filterEnd=None):
     # "Job","Clocked In","Clocked Out","Duration","Comment","Breaks","Adjustments","Mileage"
     # "Centralway","03/04/2017 08:50","03/04/2017 18:35","9:45","","","",""
     df = pd.read_csv(fname, parse_dates=[0,1,2], usecols=[1,2,3,4], names=['start','end','duration', 'notes'], skiprows=1, dayfirst=True)
@@ -107,16 +115,21 @@ def produce_report(fname, vacation=[]):
 
     df['day'] = df.start.apply(lambda d: d.date())
     df['m'] = df.duration.apply(lambda t: t.hour*60 + t.minute)
+    
+    # Filter out before start and after end
+    if filterStart is not None:
+        df = df[df.day > filterStart]
+    if filterEnd is not None:
+        df = df[df.day < filterEnd]
+        
     df = df.sort_values(by='day').reindex()
-
+    
     # Group by day to get rid of multiple clock-in in a given day
     df2 = df.groupby('day', as_index=False).m.sum()
     df2['month'] = df2.day.apply(lambda d: d.month)
 
 
-    # FIXME 4 is hardcoded
-    mnumber = 4
-    month = df2[df2.month == mnumber]
+    month = df2[df2.month == df2.month[0]]
 
     # Get the current year
     cyear, cmonth = month.day[0].year, month.day[0].month
@@ -126,12 +139,15 @@ def produce_report(fname, vacation=[]):
     m = df2.groupby(df2.month, as_index=False).m.sum()
 
     # Now, for each remaining month, let's add some rows.
-    for mn in range(m.month.max()+1, 13):
-        m = m.append(
-            {
-                'month': mn,
-                'm': 0,
-            }, ignore_index=True)
+    if not filterEnd:
+        for mn in range(m.month.max()+1, 13):
+            m = m.append(
+                {
+                    'month': mn,
+                    'm': 0,
+                }, ignore_index=True)
+
+        
     m['Month'] = m.month.apply(lambda x: cl.month_abbr[x])
     m['wdays'] = m.month.apply(lambda x: expected_to_work(x, year=cyear)[0])
     m['em'] = m.month.apply(lambda x: expected_to_work(x, year=cyear)[1])
@@ -146,19 +162,19 @@ def produce_report(fname, vacation=[]):
 
 
 def main(cfg, stream=sys.stdout):
-    m, full = produce_report(cfg.filename, cfg.vacation)
+    m, full = produce_report(cfg.filename, cfg.vacation, cfg.start, cfg.end)
 
     stream.write("Running year\n")
     stream.write("Worked:          %9s\n" % mtoh(m.m.sum()))
     stream.write("Expected:        %9s\n" % mtoh(m.em.sum()))
     stream.write("Balance:         %9s\n" % mtoh(m.balance_m.sum()))
-    stream.write("Vacation days:   %9d (%d)\n" % (len(cfg.vacation), total_vacation_days - len(cfg.vacation)))
+    stream.write("Vacation days:   %9d (%d) (might include on-call compensation)\n" % (len(cfg.vacation), total_vacation_days - len(cfg.vacation)))
     stream.write("\n")
 
     full['tmp'] = full.day.apply(lambda x: x.month)
     m["vacations"] = m["month"].apply(lambda x: full[(full.tmp==x)&(full.notes=='VACATION')].tmp.count())
     del full['tmp']
-    
+
     for label in ['m', 'em', 'month', 'Month', 'balance_m']:
         del m[label]
     # stream.write(df2)
@@ -167,8 +183,9 @@ def main(cfg, stream=sys.stdout):
 
     if cfg.full:
         full['hours'] = full.m.apply(mtoh)
-        full['day'] = full.day.apply(lambda x: x.strftime("%a %d"))
-        full['month'] = full.day.apply(lambda x: x.strftime("%b"))
+        full["_day"] = full["day"]
+        full['day'] = full._day.apply(lambda x: x.strftime("%a %d"))
+        full['month'] = full._day.apply(lambda x: x.strftime("%b"))
 
         full['start'] = full.start.apply(lambda x: x.strftime("%H:%M"))
         full['end'] = full.end.apply(lambda x: x.strftime("%H:%M"))
